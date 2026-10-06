@@ -3,6 +3,62 @@
 //! Note: all macros must avoid un-hygienic / hidden control flow like `return`
 //! or `?`
 
+// JNI defines jboolean as an unsigned byte, not C/C++ bool. On Android
+// (including ARM native bridges) the upper return-register bits need not be
+// zero. Read the byte before converting it to Rust bool; otherwise a false
+// ExceptionCheck can enter the exception handler with no Throwable present.
+macro_rules! jni_boolean_ffi_call {
+    ($env:expr, $interface:expr, $version:tt, $name:ident,
+        [$($arg_type:ty),*] $(, $args:expr)*) => {{
+        #[cfg(target_os = "android")]
+        {
+            let call: unsafe extern "system" fn(*mut jni_sys::JNIEnv $(, $arg_type)*) -> u8 =
+                core::mem::transmute((*$interface).$version.$name);
+            call($env $(, $args)*) != 0
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            ((*$interface).$version.$name)($env $(, $args)*)
+        }
+    }};
+}
+
+macro_rules! jni_ffi_call {
+    ($env:expr, $interface:expr, $version:tt, ExceptionCheck) => {
+        jni_boolean_ffi_call!($env, $interface, $version, ExceptionCheck, [])
+    };
+    ($env:expr, $interface:expr, $version:tt, IsAssignableFrom $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, IsAssignableFrom, [jni_sys::jclass, jni_sys::jclass] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, IsInstanceOf $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, IsInstanceOf, [jni_sys::jobject, jni_sys::jclass] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, IsSameObject $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, IsSameObject, [jni_sys::jobject, jni_sys::jobject] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, IsVirtualThread $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, IsVirtualThread, [jni_sys::jobject] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, CallBooleanMethodA $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, CallBooleanMethodA, [jni_sys::jobject, jni_sys::jmethodID, *const jni_sys::jvalue] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, CallStaticBooleanMethodA $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, CallStaticBooleanMethodA, [jni_sys::jclass, jni_sys::jmethodID, *const jni_sys::jvalue] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, CallNonvirtualBooleanMethodA $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, CallNonvirtualBooleanMethodA, [jni_sys::jobject, jni_sys::jclass, jni_sys::jmethodID, *const jni_sys::jvalue] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, GetBooleanField $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, GetBooleanField, [jni_sys::jobject, jni_sys::jfieldID] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, GetStaticBooleanField $(, $args:expr)*) => {
+        jni_boolean_ffi_call!($env, $interface, $version, GetStaticBooleanField, [jni_sys::jclass, jni_sys::jfieldID] $(, $args)*)
+    };
+    ($env:expr, $interface:expr, $version:tt, $name:ident $(, $args:expr)*) => {
+        ((*$interface).$version.$name)($env $(, $args)*)
+    };
+}
+
 /// Directly calls an exception-safe Env FFI function, nothing else
 ///
 /// # Safety
@@ -39,7 +95,7 @@ macro_rules! ex_safe_jni_call_no_post_check_ex {
         let env: *mut jni_sys::JNIEnv = $jnienv.get_raw();
         let interface: *const jni_sys::JNINativeInterface_ = *env;
 
-        ((*interface).$version.$name)(env $(, $args)*)
+        jni_ffi_call!(env, interface, $version, $name $(, $args)*)
     }};
 }
 
@@ -67,7 +123,7 @@ macro_rules! jni_call_no_post_check_ex {
             let env: *mut jni_sys::JNIEnv = $jnienv.get_raw();
             let interface: *const jni_sys::JNINativeInterface_ = *env;
 
-            Ok(((*interface).$version.$name)(env $(, $args)*))
+            Ok(jni_ffi_call!(env, interface, $version, $name $(, $args)*))
         })
     }};
 }
